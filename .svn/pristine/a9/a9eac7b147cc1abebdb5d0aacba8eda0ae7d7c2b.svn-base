@@ -1,0 +1,30 @@
+<?php
+namespace app\store\model;
+
+use app\common\model\OfflineOrder as OfflineOrderModel;
+use think\Exception;
+
+class OfflineOrder extends OfflineOrderModel
+{
+    public function get_list($pay_status, $start_time, $end_time, $search_value, $limit, $page){
+        if (!empty($pay_status) || (int)$pay_status != 0){
+            $this->where('pay_status', '=', (int)$pay_status);
+        }
+        if (!empty($start_time) && !empty($end_time)){
+            if ((int)$start_time < (int)$end_time){
+                $this->where('create_time', 'between', [(int)$start_time, (int)$end_time]);
+            }
+        }
+        if (!empty($search_value)){
+            $this->where('pay_status', '=', $pay_status);
+        }
+        try{
+            $data = $this->order(['order.create_time' => 'desc'])->paginate($limit, false, [
+                'page' => $page,
+            ])->toArray();
+            return $data;
+        }catch (Exception $e){
+            return false;
+        }
+    }
+}

@@ -1,0 +1,63 @@
+<?php
+
+namespace app\api\controller\offline;
+
+use app\api\controller\Controller;
+use app\api\model\offline\Order as OrderModel;
+use app\common\enum\order\PayType as PayTypeEnum;
+
+/**
+ * 订单控制器
+ * Class Order
+ * @package app\api\controller
+ */
+class Order extends Controller
+{
+    /* @var \app\api\model\User $user */
+    private $user;
+
+    /**
+     * 构造方法
+     * @throws \app\common\exception\BaseException
+     * @throws \think\exception\DbException
+     */
+    public function _initialize()
+    {
+        parent::_initialize();
+        $this->user = $this->getUser();   // 用户信息
+    }
+
+    /**
+     * 订单确认-立即购买
+     * @param float $order_amount 商品id
+     * @param int   $pay_type 支付方式
+     * @return array
+     * @throws \app\common\exception\BaseException
+     * @throws \think\exception\DbException
+     * @throws \Exception
+     */
+    public function buyNow($order_amount, $pay_type = PayTypeEnum::WECHAT, $remark = '')
+    {
+        // 商品结算信息
+        $model = new OrderModel;
+        $order = $model->getBuyNow($this->user, $order_amount, $pay_type);
+        if ($model->hasError()) {
+            return $this->renderError($model->getError());
+        }
+
+	    // 创建订单
+        if (!$model->createOrder($this->user, $order, $remark)) {
+            return $this->renderError($model->getError() ?: '订单创建失败');
+        }
+	    $contribution = $order_amount * 0.1;
+
+        // 构建微信支付请求
+        $payment = ($pay_type == PayTypeEnum::WECHAT) ? $model->paymentByWechat($this->user) : [];
+        return $this->renderSuccess([
+            'order_id'     => $model['order_id'],   // 订单id
+            'pay_type'     => $pay_type,            // 支付方式
+            'payment'      => $payment,               // 微信支付参数
+	        'contribution' => number_format($contribution, 2, '.', '')
+        ]);
+    }
+}

@@ -1,0 +1,60 @@
+<?php
+
+namespace app\api\controller\user;
+
+use app\api\controller\Controller;
+use app\api\model\Withdraw as WithdrawModel;
+use app\common\model\User as UserModel;
+// use app\api\model\dealer\Withdraw as WithdrawModel;
+
+/**
+ * 用户提现
+ * Class service
+ * @package app\api\controller\user\order
+ */
+class Withdraw extends Controller {
+    /* @var \app\api\model\User $user */
+    private $user;
+
+    /**
+     * 构造方法
+     * @throws \app\common\exception\BaseException
+     * @throws \think\exception\DbException
+     */
+    public function _initialize() {
+        parent::_initialize();
+        $this->user = $this->getUser();   // 用户信息
+    }
+
+
+    public function submit($data) {
+        $formData = json_decode(htmlspecialchars_decode($data), true);
+        // 获取数据中心用户数据
+        $userBonusData = UserModel::getContributionAndBonusFromDbcenter($this->user['user_id']);
+        $money    = floatval($formData['money']);
+        $canBonus = floatval($userBonusData['can_bonus']);
+        if($money > $canBonus) {
+            return $this->renderError($model->getError() ?: '超出可提现额度');
+        }
+
+        $model = new WithdrawModel;
+        if ($model->submit($this->user['user_id'], $formData)) {
+            $userBonusData['can_bonus'] = $canBonus - $money;
+
+            return $this->renderSuccess($userBonusData, '申请提现成功');
+        }
+        return $this->renderError($model->getError() ?: '提交失败');
+    }
+
+    /**
+     * 提现列表
+     * @param $dataType
+     * @return array
+     * @throws \think\exception\DbException
+     */
+    public function lists($dataType = -1, $limit = 15) {
+        $model = new WithdrawModel;
+        $list = $model->getList($this->user['user_id'], $dataType, $limit);
+        return $this->renderSuccess(compact('list'));
+    }
+}

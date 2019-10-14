@@ -1,0 +1,145 @@
+<?php
+
+namespace app\api\controller\user;
+
+use app\api\controller\Controller;
+use app\api\model\Order as OrderModel;
+use app\api\model\Withdraw as WithdrawModel;
+use app\common\library\dbcenter\Util;
+use app\api\model\UserCoupon as UserCouponModel;
+use app\api\model\User as UserModel;
+use think\Config;
+use app\api\model\Setting as SettingModel;
+use app\common\library\dbcenter\User as DBCenterUser;
+
+/**
+ * 个人中心主页
+ * Class Index
+ * @package app\api\controller\user
+ */
+class Index extends Controller
+{
+    /**
+     * 获取当前用户信息
+     * @return array
+     * @throws \app\common\exception\BaseException
+     * @throws \think\Exception
+     * @throws \think\exception\DbException
+     */
+    public function detail()
+    {
+        // 当前用户信息
+        $user = $this->getUser();
+        // Get data from dbcenter
+        $data = [
+            'contribution' => 0,
+            'waiting_contribution' => 0,
+            'bonus' => 0,
+            'can_bonus' => 0
+        ];
+        $data = self::_getContributionAndBonus($user['user_id']);
+        $user['contribution'] = number_format($data['contribution'], 2, '.', '');
+        $user['waiting_contribution'] = number_format($data['waiting_contribution'], 2, '.', '');
+        $user['total_loss_contribution'] = number_format($data['total_loss_contribution'], 2, '.', '');
+        $user['bonus']         = number_format($data['bonus'], 9, '.', '');
+
+        $canBonus                  = floatval($data['can_bonus']);
+        $waitingWithdrawAmount     = (new WithdrawModel)->getWaitingAmount($user['user_id']);
+        if($waitingWithdrawAmount)
+            $canBonus -= $waitingWithdrawAmount;
+
+        $canBonus = $canBonus > 0 ? $canBonus : 0;
+        $user['can_bonus']     = number_format($canBonus, 9, '.', '');
+        $user['waiting_bonus'] = number_format($data['waiting_bonus'], 9, '.', '');
+        // 判断当前用户是否店员
+        $user['is_clerk']      = (int)(new UserModel)->isClerk($user['user_id']);
+        // 图表数据
+        $chartData = null;
+        $showChart = (int) SettingModel::getItem('store')['show_chart'];
+        if($showChart) {
+            list($contributionsData, $bonusData, $personNum, $bonusNum, $totalContribution, $totalBonus, $xAxis) = DBCenterUser::getChartData($user['user_id']);
+            $chartData = [
+                'xAxis' => $xAxis,
+                'series' => [
+                    'bonus' => [
+                        'name' => '分红',
+                        'data' => $bonusData
+                    ],
+                    'contribution' => [
+                        'name' => '贡献',
+                        'data' => $contributionsData
+                    ]
+                ],
+                'totalContribution' => $totalContribution,
+                'totalBonus' => number_format($totalBonus, 9, '.', ''),
+                'personNum'  => $personNum,
+                'bonusNum'   => $bonusNum
+            ];
+        }
+        // 订单总数
+        $model = new OrderModel;
+        return $this->renderSuccess([
+            'userInfo' => $user,
+            'orderCount' => [
+                'payment'  => $model->getCount($user['user_id'], 'payment'),
+                'received' => $model->getCount($user['user_id'], 'received'),
+                'comment'  => $model->getCount($user['user_id'], 'comment'),
+                'delivery' => $model->getCount($user['user_id'], 'delivery')
+            ],
+            'couponCount'=> (new UserCouponModel)->getCount($user['user_id']),
+            'isRecharge' => (int) SettingModel::getItem('recharge')['is_recharge'],
+            'menus' => $user->getMenus(),   // 个人中心菜单列表
+            'chartData' => $chartData
+        ]);
+    }
+
+    /**
+     * 获取用户分红
+     */
+     public function bonus() {
+         // 当前用户信息
+         $userInfo = $this->getUser();
+
+         $data = self::_getContributionAndBonus($userInfo['user_id']);
+         return $this->renderSuccess([
+             'bonus'        => $data['bonus'] ? number_format($data['bonus'], 9, '.', '') : 0,
+             'contribution' => $data['contribution'] ? number_format($data['contribution'], 2, '.', '') : 0
+         ]);
+     }
+
+     /**
+     * 获取用户贡献和分红数据（从数据中心获取数据）
+     * @param int $user_id
+     */
+    private static function _getContributionAndBonus($user_id = 0) {
+        $data = [
+            'merchantCode' => Config::get('dbcenter.merchantCode'),
+            'userCode' => !$user_id ? '' : $user_id
+        ];
+        $sign = (new Util)->makePaySign($data);
+        $data['sign'] = $sign;
+
+        $bonus = $contribution = $canBonus = $waitingBonus = $waitingContribution = $totalLossContribution = 0;
+        $return = Util::request(Config::get('dbcenter.apiUrl') . 'dc/account/query/user', $data);
+        $item  = json_decode($return, true);
+
+        if($item['code'] == '0000') {
+            $bonus        = isset($item['totalDividend']) ? $item['totalHistoryDividend'] : 0;
+            // $bonus        = isset($item['totalDividend']) ? $item['totalDividend'] : 0;
+            $canBonus     = isset($item['availableDividend']) ? $item['availableDividend'] : 0;
+            $waitingBonus = isset($item['frozenDividend']) ? $item['frozenDividend'] : 0;
+            $contribution = isset($item['totalContribution']) ? $item['totalContribution'] : 0;
+            $waitingContribution   = isset($item['availableContribution']) ? $item['availableContribution'] : 0;
+            $totalLossContribution = isset($item['totalDepleteContribution']) ? $item['totalDepleteContribution'] : 0;
+        }
+
+        return [
+            'bonus' => $bonus,
+            'can_bonus'     => $canBonus,
+            'waiting_bonus' => $waitingBonus,
+            'contribution'  => $contribution,
+            'waiting_contribution'    => $waitingContribution,
+            'total_loss_contribution' => $totalLossContribution
+        ];
+    }
+}

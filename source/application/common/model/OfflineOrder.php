@@ -1,0 +1,18 @@
+<?php
+
+
+namespace app\common\model;
+
+class OfflineOrder extends BaseModel
+{
+    protected $name = 'offline_order';
+
+    /**
+     * 关联用户表
+     * @return \think\model\relation\BelongsTo
+     */
+    public function user()
+    {
+        return $this->belongsTo('User');
+    }
+}

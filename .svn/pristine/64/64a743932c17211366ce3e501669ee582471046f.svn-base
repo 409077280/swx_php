@@ -1,0 +1,193 @@
+<link rel="stylesheet" href="https://unpkg.com/element-ui/lib/theme-chalk/index.css">
+<style>
+    .el-dropdown-link {
+        cursor: pointer;
+        color: #409EFF;
+    }
+    .el-icon-arrow-down {
+        font-size: 12px;
+    }
+    .el-input{
+        width: 230px;
+    }
+    .el-table{
+        font-size: 10px;
+    }
+</style>
+
+<div class="row-content am-cf">
+    <div class="row">
+        <div class="am-u-sm-12 am-u-md-12 am-u-lg-12">
+            <div class="widget am-cf">
+                <div class="widget-head am-cf">
+                    <div class="widget-title am-cf">订单</div>
+                </div>
+                <div class="widget-body am-fr">
+                    <div id="app" style="padding: 20px;">
+                        <div style="margin-bottom: 20px;">
+
+                            <el-date-picker v-model="start_time" type="date" placeholder="选择开始日期" format="yyyy 年 MM 月 dd 日" value-format="timestamp">
+                            </el-date-picker>
+
+                            <el-date-picker v-model="end_time" type="date" placeholder="选择结束日期" format="yyyy 年 MM 月 dd 日" value-format="timestamp">
+                            </el-date-picker>
+
+                            <el-input placeholder="请输入订单号/用户昵称" @input="searchValueChange" v-model="search_value" clearable></el-input>
+                        </div>
+
+                        <template>
+                            <el-table :data="tableData" max-height="790" height="700">
+
+                                <el-table-column label="订单ID"  align="center" width="90">
+                                        <template slot-scope="scope">
+                                        <span>{{ scope.row.order_id }}</span>
+                                    </template>
+                                </el-table-column>
+
+                                <el-table-column label="订单号" align="center" width="90">
+                                        <template slot-scope="scope">
+                                        <span>{{ scope.row.order_no }}</span>
+                                    </template>
+                                </el-table-column>
+
+                                <el-table-column label="用户头像" align="center" width="150">
+                                        <template slot-scope="scope">
+                                        <span>{{ scope.row.total_price }}</span>
+                                    </template>
+                                </el-table-column>
+
+                                <el-table-column label="昵称"  align="center">
+                                        <template slot-scope="scope">
+                                        <span>{{ scope.row.user_id }}</span>
+                                    </template>
+                                </el-table-column>
+
+                                <el-table-column label="订单金额" align="center">
+                                    <template slot-scope="scope">
+                                        <span>{{ scope.row.total_price }}</span>
+                                    </template>
+                                </el-table-column>
+
+                                <el-table-column label="实付金额" align="center" width="250">
+                                    <template slot-scope="scope">
+                                        <span>{{ scope.row.pay_price }}</span>
+                                    </template>
+                                </el-table-column>
+
+                                <el-table-column label="支付方式" align="center" width="250">
+                                    <template slot-scope="scope">
+                                        <span>{{ scope.row.pay_type }}</span>
+                                    </template>
+                                </el-table-column>
+
+                                <el-table-column label="付款状态" align="center" width="250">
+                                    <template slot-scope="scope">
+                                        <span>{{ scope.row.pay_status }}</span>
+                                    </template>
+                                </el-table-column>
+
+                                <el-table-column label="付款状态" align="center" width="250">
+                                    <template slot-scope="scope">
+                                        <span>{{ scope.row.pay_status }}</span>
+                                    </template>
+                                </el-table-column>
+
+                                <el-table-column label="付款状态" align="center" width="250">
+                                    <template slot-scope="scope">
+                                        <span>{{ scope.row.order_status }}</span>
+                                    </template>
+                                </el-table-column>
+
+                                <el-table-column label="微信交易号" align="center" width="250">
+                                    <template slot-scope="scope">
+                                        <span>{{ scope.row.transaction_id }}</span>
+                                    </template>
+                                </el-table-column>
+
+                                <el-table-column label="留言" align="center">
+                                    <template slot-scope="scope">
+                                        <span>{{ scope.row.buyer_remark }}</span>
+                                    </template>
+                                </el-table-column>
+
+                                <el-table-column label="付款时间" align="center">
+                                    <template slot-scope="scope">
+                                        <span>{{ scope.row.pay_time }}</span>
+                                    </template>
+                                </el-table-column>
+
+                            </el-table>
+                            <div class="block">
+                                <el-pagination @size-change="sizeChange" @current-change="currentChange" :current-page="currentPage" :page-sizes="[10, 50, 250, 1250]" :page-size="limit" layout="total, sizes, prev, pager, next, jumper" :total="dataTotal">
+                                </el-pagination>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+
+<script src="https://cdn.jsdelivr.net/npm/vue/dist/vue.js"></script>
+<script src="https://cdn.bootcss.com/axios/0.19.0-beta.1/axios.min.js"></script>
+<script src="https://unpkg.com/element-ui/lib/index.js"></script>
+<script>
+    var Main = {
+        data() {
+            return {
+                dataTotal: 0,       //记录总数
+                tableData: [],      //当前页数据
+
+                currentPage: 1,
+                limit: 10,
+
+                pay_status: '',                     //支付状态
+                start_time: (new Date()).valueOf(), //开始时间
+                end_time: (new Date()).valueOf(),   //结束时间
+                search_value: '',                   //搜索值
+            }
+        },
+        methods: {
+            sizeChange(val) {
+                this.limit = val;
+                this.recordGet();
+            },
+            currentChange(val) {
+                this.currentPage = val;
+                this.recordGet();
+            },
+            searchValueChange(val){
+                this.search_value = val;
+                this.currentPage = 1;
+                this.recordGet();
+            },
+            init(){
+                this.filteType = "all";
+                this.recordGet();
+            },
+            recordGet(){
+                var url = 'index.php?s=/store/offlineorder/get_list&pay_status=' + this.pay_status + '&start_time=' + this.start_time + '&end_time=' + this.end_time + '&search_value=' + this.search_value + '&limit='+ this.limit + '&page=' + this.currentPage ;
+                axios.get(url).then((res) => {
+                    console.log((new Date()).valueOf());
+                    if ( res.data.code == 0){
+                        this.dataTotal = res.data.data.total;
+                        this.tableData = res.data.data.data;
+                    }
+                }).catch((error) => {
+                    this.$message({
+                        type: 'error',
+                        message: error.msg
+                    });
+                });
+            },
+        },
+        mounted: function () {
+            this.init();
+        },
+    };
+    var Ctor = Vue.extend(Main);
+    new Ctor().$mount('#app');
+</script>

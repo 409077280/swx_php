@@ -1,0 +1,36 @@
+<?php
+
+namespace app\store\controller;
+
+
+class Offlineorder extends Controller
+{
+    public function index(){
+        $list = [
+            'title' => '所有订单',
+            'pay_status' => '0',
+        ];
+        $title = "全部订单";
+        return $this->fetch('index', compact($list, $title));
+    }
+
+    public function list_nopay(){
+        $list = [
+            'title' => '待付款',
+            'pay_status' => '10',
+        ];
+        return $this->fetch('index', $list);
+    }
+
+    public function list_paid(){
+        $list = [
+            'title' => '已付款',
+            'pay_status' => '20',
+        ];
+        return $this->fetch('index', $list);
+    }
+
+    public function get_list($pay_status, $search_value, $start_time, $end_time, $limit, $page){
+
+    }
+}

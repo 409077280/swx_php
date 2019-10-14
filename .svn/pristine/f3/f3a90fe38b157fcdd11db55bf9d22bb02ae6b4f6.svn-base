@@ -1,0 +1,74 @@
+<?php
+
+namespace app\api\controller;
+
+use app\api\model\User as UserModel;
+use app\common\library\wechat\WxBizDataCrypt;
+/**
+ * 用户管理
+ * Class User
+ * @package app\api
+ */
+class User extends Controller
+{
+    /**
+     * 用户自动登录
+     * @return array
+     * @throws \app\common\exception\BaseException
+     * @throws \think\Exception
+     * @throws \think\exception\DbException
+     */
+    public function login()
+    {
+        $model  = new UserModel;
+        $userId = $model->login($this->request->post());
+        if($userId)
+            $userInfo = UserModel::detail($userId);
+        return $this->renderSuccess([
+            'user_id' => $userId,
+            'token'   => $model->getToken(),
+            'mobile'  => $userInfo->mobile ? $userInfo->mobile : null
+        ]);
+    }
+
+    /**
+     * 获取手机号码
+     */
+    public function mobile() {
+        $encryptedData = $this->postData('encryptedData')[0];
+        $iv            = $this->postData('iv')[0];
+        $userId        = $this->postData('user_id')[0];
+
+        if(!$encryptedData || !$iv || !$userId) {
+            return $this->renderError(404, '缺少参数');
+        } else {
+            // 保存手机号码
+            $user = UserModel::detail(['user_id' => $userId]);
+            if(!$user) {
+                return $this->renderError(400, '用户不存在');
+            } else {
+                $result = WxBizDataCrypt::decrypt($encryptedData, $iv, $userId);
+
+                if($result && isset($result['purePhoneNumber']) && $result['purePhoneNumber']) {
+                    $user->updateMobile($result['purePhoneNumber']);
+                    return $this->renderSuccess('操作成功');
+                } else {
+                    return $this->renderError(400, '获取手机号码失败');
+                }
+            }
+        }
+    }
+
+    /**
+     * 当前用户详情
+     * @return array
+     * @throws \app\common\exception\BaseException
+     * @throws \think\exception\DbException
+     */
+    public function detail()
+    {
+        // 当前用户信息
+        $userInfo = $this->getUser();
+        return $this->renderSuccess(compact('userInfo'));
+    }
+}

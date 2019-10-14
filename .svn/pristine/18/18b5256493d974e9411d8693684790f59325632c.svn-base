@@ -1,0 +1,167 @@
+<?php
+
+namespace app\api\model;
+
+use app\common\model\Contribution as ContributionModel;
+use app\api\model\Goods as GoodsModel;
+use app\api\model\sharing\Goods as SharingGoodsModel;
+use app\common\library\dbcenter\Util;
+use think\Config;
+
+/**
+ * 分红模型
+ * Class Bonus
+ * @package app\api\model
+ */
+class Contribution extends ContributionModel {
+    /**
+     * 隐藏字段
+     * @var array
+     */
+    protected $hidden = [
+        'create_time',
+        'wxapp_id'
+    ];
+
+    /**
+     * 获取用户贡献列表
+     * @param int $user_id
+     * @param int $limit
+     * @return \think\Paginator
+     * @throws \think\exception\DbException
+     */
+    public function getListFromDb($user_id = 0, $type, $limit = 15) {
+        return $this->field(['contribution', 'short_desc', 'create_time', 'order_amount'])
+            ->where('user_id', '=', $user_id)
+            ->where('status', '=', $type)
+            ->order(['id' => 'desc'])
+            ->paginate($limit, false, [
+                'query' => \request()->request()
+            ]);
+    }
+
+    /**
+     * 获取用户贡献列表（从数据中心获取数据）
+     * @param int $user_id
+     * @param int $limit
+     * @return \think\Paginator
+     * @throws \think\exception\DbException
+     */
+    public function getList($user_id = 0, $dataType, $page = 1, $limit = 15, $businessType = '') {
+        $dataType = $dataType == 'freeze' ? 0 : 1;
+        $data = [
+            'merchantCode' => Config::get('dbcenter.merchantCode'),
+            'userCode' => !$user_id ? '' : $user_id,
+            'periodType' => $dataType,
+            'businessType' => $businessType,
+            'orderId' => '',
+            'startTime' => strtotime('-180 days'),
+            'endTime' => time(),
+            'pageNum' => $page,
+            'pageSize' => $limit
+        ];
+        $sign = (new Util)->makePaySign($data);
+        $data['sign'] = $sign;
+
+        $returnData = [];
+        $return = Util::request(Config::get('dbcenter.apiUrl') . 'dc/account/contribution/flow', $data);
+        $items  = json_decode($return, true);
+        // file_put_contents('/www/web/swx_dedeshijie_com/web/temp/callback.html', print_r($items, true));
+        if($items['code'] == '0000') {
+            foreach($items['list'] as $item) {
+                $temp = [];
+                $attachArr = [];
+                $attach    = $item['attach'];
+                if($attach)
+                    $attachArr = explode('|', $attach);
+
+                $goodsId   = $item['goodsId'];
+                if(isset($attachArr[0])) {
+                    if($attachArr[0] == 'create') {
+                        $goodsInfo = GoodsModel::detail($goodsId);
+                    } else {
+                        $goodsInfo = SharingGoodsModel::detail($goodsId);
+                    }
+                } else {
+                    $goodsInfo = GoodsModel::detail($goodsId);
+                }
+
+                $userId    = $item['userCode'];
+                if($userId == 'SYS')
+                    $userInfo = User::random();
+                else
+                    $userInfo = User::detail($userId);
+
+                $temp['order_id']          = $item['orderId'];
+                $temp['goods_id']          = $item['goodsId'];
+                $temp['goods_sku_id']      = $item['goodsSkuId'];
+                $temp['goods_sku_id']      = $item['goodsSkuId'];
+                $temp['contribution']      = number_format($item['contribution'], 2, '.', '');
+                // $temp['left_contribution'] = number_format($item['leftContribution'], 2, '.', '');
+                $temp['total_lost_contribution'] = number_format($item['depleteTotalContribution'], 2, '.', '');
+                if($item['orderType'] == '40')
+                    $temp['short_desc'] = '线下订单';
+                else
+                    $temp['short_desc']        = self::_getShortDesc($goodsInfo['goods_name'], $item['businessType']);
+
+                $temp['create_time']       = $item['time'];
+                $temp['order_amount']      = number_format(($item['price']  / 100), 2, '.', '');
+                if($item['businessType'] == 0 || $item['businessType'] == 1) {
+                    $temp['user']['nickName']  = '';
+                    $temp['user']['avatarUrl'] = '';
+                } else {
+                    $temp['user']['nickName']  = $userInfo['nickName'];
+                    $temp['user']['avatarUrl'] = $userInfo['avatarUrl'];
+                }
+                $temp['type']      = $item['businessType'];
+                $temp['orderType'] = $item['orderType'];
+                // 临时处理，下个版本删除
+                if($temp['type'] == 4)
+                    $temp['type'] = 5;
+
+                array_push($returnData, $temp);
+            }
+        }
+
+        return ['data' => $returnData];
+    }
+
+    /**
+     * 获取贡献详情（从数据中心获取数据）
+     */
+    public static function detail($userId, $orderId, $goodsId, $goodsSkuId) {
+         $data = [
+            'merchantCode' => Config::get('dbcenter.merchantCode'),
+            'userCode'     => !$userId ? '' : $userId,
+            'orderId'      => $orderId,
+            'goodsId'      => $goodsId,
+            'goodsSkuId'   => $goodsSkuId
+        ];
+        $sign = (new Util)->makePaySign($data);
+        $data['sign'] = $sign;
+
+        $return = Util::request(Config::get('dbcenter.apiUrl') . 'dc/account/depleteContribution', $data);
+        $item  = json_decode($return, true);
+
+        if($item['code'] == '0000') {
+            return [$item['depleteContributionList'], $item['depleteTotalContribution']];
+        } else {
+            return [];
+        }
+    }
+
+    private static function _getShortDesc($goodsName, $type = '') {
+        $typeDescItems = [
+            '7' => '商品分享购买成功',
+            '6' => '签到成功',
+            '5' => '我来了！',
+            '4' => '新人首单购买成功',
+            '3' => '新人邀请成功',
+            '0' => '贡献消损'
+        ];
+        if($type == 1)
+            return $goodsName;
+
+        return isset($typeDescItems[$type]) ? $typeDescItems[$type] : $goodsName;
+    }
+}

@@ -1,0 +1,91 @@
+<?php
+
+namespace app\store\model;
+
+use app\common\model\Region;
+use app\common\model\UserAddress as UserAddressModel;
+use app\store\model\User as UserModel;
+use think\Exception;
+
+/**
+ * 用户收货地址模型
+ * Class UserAddress
+ * @package app\store\model
+ */
+class UserAddress extends UserAddressModel
+{
+    /**
+     * 获取用户信息
+     * @param $provinceId
+     * @param $cityId
+     * @param $gender
+     * @param $keywords
+     * @return array|bool|false|\PDOStatement|string|\think\Collection
+     */
+    public function getUserInfo($provinceId, $cityId, $gender, $keywords){
+        // 检查省份
+        if (!empty($provinceId)){
+            $this->where(['province_id' => (int)$provinceId]);
+        }
+        // 检查城市
+        if (!empty($provinceId) && !empty($cityId)){
+            $this->where(['city_id' => (int)$cityId]);
+        }
+        // 检索 收货人姓名 和 联系电话
+        if (!empty($keywords)){
+            $this->where("name like '%{$keywords}%' or phone like '%{$keywords}%'");
+        }
+        try{
+            $data = $this->select()->toArray();
+            $data = $this->repeat($data, $gender);
+            return $data;
+        }catch (Exception $e){
+            echo $e->getMessage();
+            return false;
+        }
+    }
+
+    /**
+     * 去重，附加信息
+     * @param $data
+     * @param $gender
+     * @return array
+     * @throws \think\Exception
+     * @throws \think\exception\DbException
+     */
+    private function repeat($data, $gender){
+        $newData = [];
+        if (empty($data) || empty($gender)){
+            return $newData;
+        }
+        foreach ($data as $datum){
+            // TODO: 数据库性能优化，把所有$data的user_id取出来，去重，select * from yoshop_user where in ( , , , )
+            $notFindUser = UserModel::detail($datum['user_id'], true)->toArray();
+            // 若用户默认收货地址等于当前地址
+            if ($notFindUser['address_id'] == $datum['address_id']){
+                $genderInfo = ['未知', '男', '女'];
+                if ((int)$gender == -1){
+                    // TODO: 数据库性能优化，把所有$data的province_id、 city_id、 region_id取出来整合数组，去重，select * from yoshop_user where in ( , , , )
+                    $notFindUser['receiveProvince'] = Region::getNameById($datum['province_id']);
+                    $notFindUser['receiveCity']     = Region::getNameById($datum['city_id']);
+                    $notFindUser['receiveRegion']   = Region::getNameById($datum['region_id']);
+                    $notFindUser['receiveDetail']  = $datum['detail'];
+                    $notFindUser['receiveName']     = $datum['name'];
+                    $notFindUser['receiveMobile']   = $datum['phone'];
+                    array_push($newData, $notFindUser);
+                    continue;
+                }
+                if ($notFindUser['gender'] == $genderInfo[(int)$gender]){
+                    $notFindUser['receiveProvince'] = Region::getNameById($datum['province_id']);
+                    $notFindUser['receiveCity']     = Region::getNameById($datum['city_id']);
+                    $notFindUser['receiveRegion']   = Region::getNameById($datum['region_id']);
+                    $notFindUser['receiveDetail']  = $datum['detail'];
+                    $notFindUser['receiveName']     = $datum['name'];
+                    $notFindUser['receiveMobile']   = $datum['phone'];
+                    array_push($newData, $notFindUser);
+                }
+            }
+        }
+        return $newData;
+    }
+}

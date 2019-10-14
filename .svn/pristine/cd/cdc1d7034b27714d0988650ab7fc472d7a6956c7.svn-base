@@ -1,0 +1,16 @@
+<?php
+namespace app\api\model;
+
+use app\common\model\CategoryDisplay as CategoryDisplayModel;
+
+class CategoryDisplay extends CategoryDisplayModel
+{
+    public static function getGoodsId($category_id){
+        $list = self::getAllByGoodsParams(['category_id' => $category_id]);
+        $data = array();
+        foreach ($list as $value){
+            array_push($data, $value['goods_id']);
+        }
+        return $data;
+    }
+}

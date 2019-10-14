@@ -1,0 +1,240 @@
+<?php
+
+namespace app\task\model\dbcenter;
+
+use app\api\model\Order as OrderModel;
+use app\api\model\Contribution as ContributionModel;
+use app\api\model\Bonus as BonusModel;
+use app\api\model\User as UserModel;
+use app\store\model\OrderGoods as OrderGoodsModel;
+use app\store\model\OrderCancel as OrderCancelModel;
+use app\common\model\Wxapp;
+use app\common\library\wechat\WxPay;
+use app\task\model\UserCoupon as UserCouponModel;
+use app\common\enum\order\PayType as PayTypeEnum;
+use app\common\service\order\Refund as RefundService;
+
+/**
+ * 订单模型
+ * Class Order
+ * @package app\common\model
+ */
+class Order extends OrderModel {
+    public function addContributionAndBonus($orderId, $userId, $returnData) {
+        $orderInfo = OrderModel::getUserOrderDetail($orderId, $userId);
+        $orderGoodsNameStr = '';
+        if($orderInfo['goods']) {
+            foreach($orderInfo['goods'] as $goods) {
+                $orderGoodsNameStr .= $goods['goods_name'] . ',';
+            }
+        }
+
+        $this->startTrans();
+        try {
+            // 插入贡献记录表
+            $cdata = [
+                'user_id'  => $userId,
+                'order_id' => $orderInfo['order_id'],
+                'order_amount' => $orderInfo['pay_price'],
+                'contribution' => $returnData['orderContribution'],
+                'wxapp_id'     => $orderInfo['wxapp_id'],
+                'short_desc'   => substr($orderGoodsNameStr, 0, -1)
+            ];
+            self::_addContribution($cdata);
+
+            // 插入分红记录表
+            $bdata = [
+                'user_id'  => $userId,
+                'order_id' => $orderInfo['order_id'],
+                'order_amount' => $orderInfo['pay_price'],
+                'bonus'        => $returnData['orderDividend'],
+                'wxapp_id'     => $orderInfo['wxapp_id'],
+                // 'from_user_id' => $returnData['fromUserCode']
+            ];
+            self::_addBonus($bdata);
+
+            // 更新用户表贡献及分红数据
+            self::_updateWaitingBonus($userId, $returnData);
+
+            $this->commit();
+
+            echo json_encode(['return_code' => 'SUCCESS', 'return_msg' => 'OK']);
+        } catch (\Exception $e) {
+            $this->rollback();
+            echo json_encode(['return_code' => 'FAIL', 'return_msg' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * 插入贡献记录
+     */
+    private static function _addContribution($data) {
+        $model = new ContributionModel;
+        $model->save($data);
+    }
+
+    /**
+     * 删除贡献记录
+     */
+    private static function _deleteContribution($userId, $orderId) {
+        return ContributionModel::get(['user_id' => $userId, 'order_id' => $orderId])->delete();
+    }
+
+    /**
+     * 插入分红记录
+     */
+    private static function _addBonus($data) {
+        $model = new BonusModel;
+        $model->save($data);
+    }
+
+    /**
+     * 删除分红记录
+     */
+    private static function _deleteBonus($userId, $orderId) {
+        return BonusModel::get(['user_id' => $userId, 'order_id' => $orderId])->delete();;
+    }
+
+    /**
+     * 更新用户表待提分红
+     */
+    private static function _updateWaitingBonus($userId, $returnData) {
+        $model = new UserModel;
+        $model->save([
+            'waiting_bonus' => $returnData['frozenDividend'],
+            'bonus'         => $returnData['totalDividend'],
+            'can_bonus'     => $returnData['availableDividend'],
+            'contribution'  => $returnData['totalContribution'],
+            'waiting_contribution' => $returnData['frozenContribution']
+        ], ['user_id' => $userId]);
+    }
+
+    public function updateUsesrContributionAndBonus($orderId, $userId, $returnData) {
+        // 更新用户表贡献及分红数据
+        self::_updateWaitingBonus($userId, $returnData);
+    }
+
+    public function updateOrderUnfrozen($orderId) {
+        $this->save([
+            'is_unfrozen' => 1
+        ], ['order_id' => $orderId]);
+    }
+
+    public function updateContributionAndBonus($orderId, $userId, $returnData) {
+        $this->startTrans();
+        try {
+            // 删除贡献
+            self::_deleteContribution($userId, $orderId);
+
+            // 删除分红
+            self::_deleteBonus($userId, $orderId);
+
+            // 更新用户表贡献及分红数据
+            self::_updateWaitingBonus($userId, $returnData);
+
+            $this->commit();
+            echo json_encode(['return_code' => 'SUCCESS', 'return_msg' => 'OK']);
+        } catch (\Exception $e) {
+            $this->rollback();
+            echo json_encode(['return_code' => 'FAIL', 'return_msg' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * 订单单商品取消
+     */
+    public function cancelConfirmGoods($orderId, $userId, $returnData, $goodsId, $goodsSkuId) {
+        $this->startTrans();
+        try {
+            $orderModel      = OrderModel::detail($orderId);
+            $orderGoodsModel = OrderGoodsModel::detail(['order_id' => $orderId, 'goods_id' => $goodsId, 'goods_sku_id' => $goodsSkuId]);
+            $refundPrice     = floatval($orderGoodsModel['total_pay_price']);
+            $totalPayPrice   = floatval($orderModel['pay_price']);
+            $payType         = $orderModel['pay_type']['value']; //订单支付方式：10余额支付，20微信支付
+            // 更新订单商品表
+            $orderGoodsModel->save(['status' => 20]);
+
+            // 更新订单取消表
+            (new OrderCancelModel)->save(['is_agree' => 10, 'refund_money' => $refundPrice],
+                ['order_id' => $orderId, 'goods_id' => $goodsId, 'goods_sku_id' => $goodsSkuId]
+            );
+
+            // 更新订单表
+            $orderStatus = self::_newOrderStatus($orderId);
+            $orderModel->save(['order_status' => $orderStatus]);
+            // 如果订单商品全部取消
+            if($orderStatus == 20) {
+                // 处理优惠信息
+                if($orderModel->coupon_id) {
+                    (new UserCouponModel)->save(['is_use' => 0], ['user_coupon_id' => $orderModel->coupon_id, 'user_id' => $userId]);
+                }
+            }
+
+            // 更新用户表贡献及分红数据
+            self::_updateWaitingBonus($userId, $returnData);
+
+            if($payType == PayTypeEnum::WECHAT) {
+                // 微信支付原路退款
+                // write_log($returnData, '', 'dbcenter-notify.log');
+                $wxConfig = Wxapp::getWxappCache($orderModel['wxapp_id']);
+                // write_log($wxConfig, '', 'dbcenter-notify.log');
+                $WxPay = new WxPay($wxConfig);
+                // write_log($orderModel['transaction_id'] . ' - ' . $totalPayPrice . ' - ' . $refundPrice);
+                $WxPay->refund($orderModel['transaction_id'], $totalPayPrice, $refundPrice);
+            } else if($payType == PayTypeEnum::BALANCE) {
+                // 退回余额
+                (new RefundService)->execute($orderModel);
+            }
+
+            $this->commit();
+            echo json_encode(['return_code' => 'SUCCESS', 'return_msg' => 'OK']);
+        } catch(\Exception $e) {
+            $this->rollback();
+            echo json_encode(['return_code' => 'FAIL', 'return_msg' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * 检查订单是否所有商品都已经取消
+     */
+    private static function _newOrderStatus($orderId) {
+        $statusItems = [];
+        $goodsItems = (new OrderGoodsModel)->getList(['order_id' => $orderId]);
+
+        foreach($goodsItems as $goods) {
+            array_push($statusItems, $goods['status']);
+        }
+
+        if(in_array(10, $statusItems)) {
+            return 21;
+        } else {
+            if(in_array(1, $statusItems)) {
+                return 10;
+            } else {
+                return 20;
+            }
+        }
+    }
+
+    /**
+     * 执行解冻操作
+     */
+     public function doUnfrozen($orderId, $userId, $returnData) {
+         $this->startTrans();
+         try {
+             // 更新用户表贡献及分红数据
+             self::_updateWaitingBonus($userId, $returnData);
+
+             // 修改订单状态
+             $this->save([
+                 'is_unfrozen' => 1
+             ], ['order_id' => $orderId]);
+
+             $this->commit();
+             echo json_encode(['return_code' => 'SUCCESS', 'return_msg' => 'OK']);
+         } catch (\Exception $e) {
+             $this->rollback();
+             echo json_encode(['return_code' => 'FAIL', 'return_msg' => $e->getMessage()]);
+         }
+     }
+}

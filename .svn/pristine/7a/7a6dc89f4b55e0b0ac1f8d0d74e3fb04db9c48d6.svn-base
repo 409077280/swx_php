@@ -1,0 +1,293 @@
+<?php
+
+namespace app\api\model;
+
+use think\Cache;
+use app\common\library\wechat\WxUser;
+use app\common\exception\BaseException;
+use app\common\model\User as UserModel;
+use app\api\model\dealer\Referee as RefereeModel;
+use app\api\model\dealer\Setting as DealerSettingModel;
+use app\common\model\store\shop\Clerk as ClerkModel;
+use app\common\library\dbcenter\User as DBCenterUser;
+use app\common\library\Geocoder;
+use app\common\library\RandomName;
+
+/**
+ * 用户模型类
+ * Class User
+ * @package app\api\model
+ */
+class User extends UserModel
+{
+    private $token;
+
+    /**
+     * 隐藏字段
+     * @var array
+     */
+    protected $hidden = [
+        'open_id',
+        'is_delete',
+        'wxapp_id',
+        'update_time'
+    ];
+
+    /**
+     * 获取用户信息
+     * @param $token
+     * @return null|static
+     * @throws \think\exception\DbException
+     */
+    public static function getUser($token)
+    {
+        return self::detail(['open_id' => Cache::get($token)['openid']]);
+    }
+
+    /**
+     * 用户登录
+     * @param array $post
+     * @return string
+     * @throws BaseException
+     * @throws \think\Exception
+     * @throws \think\exception\DbException
+     */
+    public function login($post)
+    {
+        // 微信登录 获取session_key
+        $session = $this->wxlogin($post['code']);
+        // 自动注册用户
+        $referee_id = isset($post['referee_id']) ? $post['referee_id'] : null;
+        $userInfo = json_decode(htmlspecialchars_decode($post['user_info']), true);
+        $userInfo['longitude'] = isset($post['longitude']) ? floatval($post['longitude']) : '';
+        $userInfo['latitude']  = isset($post['latitude']) ? floatval(($post['latitude'])) : '';
+        if (!empty($userInfo['longitude']) && !empty($userInfo['latitude'])){
+            $location = Geocoder::location("{$userInfo['latitude']}", "{$userInfo['longitude']}");
+            if($location) {
+                $userInfo['location_province'] = isset($location['province']) ? $location['province'] : '';
+                $userInfo['location_city']     = isset($location['city']) ? $location['city']: '';
+                $userInfo['location_district']   = isset($location['district']) ? $location['district'] : '';
+                $userInfo['location_street']  = isset($location['street_number']) ? $location['street_number'] : '';
+            }
+        }
+        $user_id  = $this->register($session['openid'], $userInfo, $referee_id);
+        // 生成token (session3rd)
+        $this->token = $this->token($session['openid']);
+        // 记录缓存, 7天
+        Cache::set($this->token, $session, 86400 * 7);
+        Cache::set('session_key-' . $user_id, $session['session_key'], 86400);
+        return $user_id;
+    }
+
+    /**
+     * 获取token
+     * @return mixed
+     */
+    public function getToken()
+    {
+        return $this->token;
+    }
+
+    /**
+     * 微信登录
+     * @param $code
+     * @return array|mixed
+     * @throws BaseException
+     * @throws \think\exception\DbException
+     */
+    private function wxlogin($code)
+    {
+        // 获取当前小程序信息
+        $wxConfig = Wxapp::getWxappCache();
+        // 验证appid和appsecret是否填写
+        if (empty($wxConfig['app_id']) || empty($wxConfig['app_secret'])) {
+            throw new BaseException(['msg' => '请到 [后台-小程序设置] 填写appid 和 appsecret']);
+        }
+        // 微信登录 (获取session_key)
+        $WxUser = new WxUser($wxConfig['app_id'], $wxConfig['app_secret']);
+        if (!$session = $WxUser->sessionKey($code)) {
+            throw new BaseException(['msg' => $WxUser->getError()]);
+        }
+        return $session;
+    }
+
+    /**
+     * 生成用户认证的token
+     * @param $openid
+     * @return string
+     */
+    private function token($openid)
+    {
+        $wxapp_id = self::$wxapp_id;
+        // 生成一个不会重复的随机字符串
+        $guid = \getGuidV4();
+        // 当前时间戳 (精确到毫秒)
+        $timeStamp = microtime(true);
+        // 自定义一个盐
+        $salt = 'token_salt';
+        return md5("{$wxapp_id}_{$timeStamp}_{$openid}_{$guid}_{$salt}");
+    }
+
+    /**
+     * 自动注册用户
+     * @param $open_id
+     * @param $data
+     * @param int $referee_id
+     * @return mixed
+     * @throws \Exception
+     * @throws \think\exception\DbException
+     */
+    private function register($open_id, $data, $referee_id = null)
+    {
+        // 查询用户是否已存在
+        $user = self::detail(['open_id' => $open_id]);
+        $model = $user ?: $this;
+        $data['open_id'] = $open_id;
+        $data['wxapp_id'] = self::$wxapp_id;
+
+        // @nickName 用户昵称
+        // 此处的preg_replace用于过滤emoji表情
+        // 如需支持emoji表情, 需将mysql的编码改为utf8mb4
+        $data['nickName'] = preg_replace('/[\xf0-\xf7].{3}/', '', $data['nickName']);
+        $data['last_login_time'] = time();
+        // 记录推荐人关系(首次)
+        if(!$user && $referee_id > 0)
+            $data['referee_id'] = $referee_id;
+
+        try {
+            $this->startTrans();
+            // 保存/更新用户记录
+            if (!$model->allowField(true)->save($data))
+                throw new BaseException(['msg' => '用户注册失败']);
+
+            // 记录推荐人关系（分销商推荐人关系，暂时不用，先屏蔽）
+            // if (!$user && $referee_id > 0)
+            //     RefereeModel::createRelation($model['user_id'], $referee_id);
+
+            // 上报数据中心
+            if(!$user && $model->user_id)
+                (new DBCenterUser)->register($model->user_id, $referee_id);
+
+            $this->commit();
+        } catch (\Exception $e) {
+            $this->rollback();
+            throw new BaseException(['msg' => $e->getMessage()]);
+        }
+        return $model['user_id'];
+    }
+
+    /**
+     * 个人中心菜单列表
+     * @return array
+     */
+    public function getMenus()
+    {
+        $menus = [
+            'sharing_order' => [
+                'name' => '拼团订单',
+                'url' => 'pages/sharing/order/index',
+                'icon' => 'pintuan'
+            ],
+            'address' => [
+                'name' => '收货地址',
+                'url' => 'pages/address/index',
+                'icon' => 'map'
+            ],
+            'coupon' => [
+                'name' => '领券中心',
+                'url' => 'pages/coupon/coupon',
+                'icon' => 'lingquan'
+            ],
+            // 'my_coupon' => [
+            //     'name' => '我的优惠券',
+            //     'url' => 'pages/user/coupon/coupon',
+            //     'icon' => 'youhuiquan'
+            // ],
+            // 'my_bargain' => [
+            //     'name' => '我的砍价',
+            //     'url' => 'pages/bargain/index/index?tab=1',
+            //     'icon' => 'kanjia'
+            // ],
+            'dealer' => [
+                'name' => '分销中心',
+                'url' => 'pages/dealer/index/index',
+                'icon' => 'fenxiaozhongxin'
+            ],
+            'help' => [
+                'name' => '我的帮助',
+                'url' => 'pages/user/help',
+                'icon' => 'help'
+            ],
+        ];
+        // 判断分销功能是否开启
+        if (DealerSettingModel::isOpen()) {
+            $menus['dealer']['name'] = DealerSettingModel::getDealerTitle();
+        } else {
+            unset($menus['dealer']);
+        }
+        return $menus;
+    }
+
+    /**
+     * 更新手机号码
+     */
+    public function updateMobile($mobile) {
+        return $this->allowField(true)->save(['mobile' => $mobile]);
+    }
+
+    /**
+     * 检查是否店员
+     */
+    public function isClerk($userId) {
+        $item = ClerkModel::detail(['user_id' => $userId]);
+
+        return $item ? true : false;
+    }
+
+    public function updateLastLoginTime($userId){
+        $model = new static;
+        $model->where(['user_id' => $userId])->update(['last_login_time' => time()]);
+    }
+
+    /**
+     * 获取随机用户昵称和头像
+     */
+    public static function random() {
+        $randomId  = rand(1, 200);
+        $nickName  = (new RandomName)->get(2);
+        $avatarUrl = "https://picsum.photos/id/{$randomId}/132/132";
+
+        return [
+            'nickName'  => $nickName,
+            'avatarUrl' => $avatarUrl
+        ];
+    }
+
+    /**
+     * 获取邀请用户总数
+     * @param $userId
+     * @return int|string
+     * @throws \think\Exception
+     */
+    public function getInviteCount($userId) {
+        return $this->where('referee_id', '=', $userId)
+            ->where('is_delete', '=', 0)
+            ->count();
+    }
+
+    /**
+     * 获取邀请用户列表
+     * @param int $userId
+     * @param int $limit
+     * @return array
+     * @throws \think\Exception
+     */
+     public function getInviteList($userId) {
+         return $this->field(['nickName', 'avatarUrl', 'create_time'])
+            ->where(['is_delete'  => 0, 'referee_id' => $userId])
+            ->order(['create_time' => 'desc'])
+            ->paginate(15, false, [
+                'query' => request()->request()
+            ]);
+     }
+}
